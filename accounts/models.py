@@ -4,6 +4,7 @@ from django.contrib.auth.models import PermissionsMixin
 
 class UserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
+        """Creates and saves a regular User with the given email and password."""
         if not email:
             raise ValueError('An email address is required')
         email = self.normalize_email(email)

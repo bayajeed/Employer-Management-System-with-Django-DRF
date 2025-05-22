@@ -1,0 +1,967 @@
+First, the custom User model. I need to extend AbstractBaseUser and PermissionsMixin. So, the User model should use email as the username field. I'll need a UserManager class that creates users and superusers. The fields might include email, name, is_active, is_staff, etc. Also, the authentication should be token-based using Simple JWT. So, I'll have to install djangorestframework-simplejwt and configure it in settings.
+
+Next, the authentication endpoints. Sign up, login, profile, and maybe logout. For sign up, a view that creates a new user using the custom User model. Login will use the Simple JWT's TokenObtainPairView or similar, but adjusted to use email instead of username. The profile endpoint is a GET that returns the current user's data.
+
+Then the Employer model. It needs to have a ForeignKey to the User model with related_name="employers". The fields are given: company_name, contact_person_name, email, phone_number, address, created_at. The API endpoints for CRUD operations on Employer must require authentication. Also, permissions so that users can only access their own employers.
+
+For the API endpoints, using DRF's class-based views. For creating Employer, a CreateAPIView. Listing all would be a ListAPIView filtered by the current user. Retrieve, update, delete using RetrieveUpdateDestroyAPIView, but with permission checks to ensure the user owns the employer.
+
+Permissions are important here. All employer endpoints need authentication. Also, each user can only access their own employers. So, a custom permission class that checks if the employer's user is the same as the request user.
+
+Let me outline the steps:
+
+1. Set up the Django project and app. Let's call the app 'employers' or 'api'.
+
+2. Define the custom User model in models.py. Override the default user model in settings.AUTH_USER_MODEL.
+
+3. Create a UserManager that handles creating users and superusers using email and password.
+
+4. Configure Simple JWT in settings. Set the authentication classes to use JWTAuthentication.
+
+5. Create serializers for the User model: one for sign up (including password), and one for profile (without password). Also a serializer for the Employer model.
+
+6. Views for authentication:
+
+- SignUpView: APIView that handles POST to create a new user.
+
+- LoginView: Use TokenObtainPairView from Simple JWT, but customize to use email.
+
+- ProfileView: RetrieveAPIView that returns the current user's data.
+
+7. Employer views:
+
+- Create (POST)
+
+- List (GET all for current user)
+
+- Retrieve, Update, Delete (GET, PUT, DELETE individual)
+
+Use generics like CreateAPIView, ListAPIView, RetrieveUpdateDestroyAPIView.
+
+8. Permissions: Create a IsOwnerOrReadOnly or similar, but check that the employer's user is the request user.
+
+Wait, but for the employer endpoints, all operations must be authenticated, and users can only access their own employers. So for the list endpoint, it should filter based on the current user. For the detail endpoints, check if the employer's user is the request user.
+
+So in the views, when listing, filter queryset by user=request.user. For the detail, use a permission class that checks obj.user == request.user.
+
+So maybe create a custom permission class like IsOwner that checks if the object's user is the current user.
+
+Let me think about the flow.
+
+For the Employer model, in the serializer, the user is automatically set to the request.user when creating. So in the view's perform_create, assign self.request.user to the employer's user field.
+
+Yes. So in the CreateAPIView, override perform_create to set the user.
+
+For the ListAPIView, override get_queryset to return Employer.objects.filter(user=self.request.user).
+
+For RetrieveUpdateDestroy, the queryset could be Employer.objects.all(), but with a permission that checks ownership. Alternatively, filter the queryset by user and then allow access. Maybe combining both.
+
+Using DRF's permissions: the user needs to be authenticated, and the object must belong to them.
+
+So, in the view for RetrieveUpdateDestroy, set permission_classes = [IsAuthenticated, IsOwner], where IsOwner is a custom permission that checks if obj.user == request.user.
+
+But how to create the IsOwner permission.
+
+Yes, create a permissions.py file in the app:
+
+from rest_framework import permissions
+
+class IsOwner(permissions.BasePermission):
+
+def has_object_permission(self, request, view, obj):
+
+return obj.user == request.user
+
+Then, in the view for the detail endpoints, set permission_classes to [IsAuthenticated, IsOwner].
+
+For the list and create endpoints, the queryset is already filtered to the user's employers, so the list will only show their own. For create, the user is automatically assigned.
+
+Now, let's outline the code.
+
+First, the User model:
+
+models.py:
+
+from django.db import models
+
+from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+
+class UserManager(BaseUserManager):
+
+def create_user(self, email, password=None, **extra_fields):
+
+if not email:
+
+raise ValueError('The Email must be set')
+
+email = self.normalize_email(email)
+
+user = self.model(email=email, **extra_fields)
+
+user.set_password(password)
+
+user.save()
+
+return user
+
+def create_superuser(self, email, password, **extra_fields):
+
+extra_fields.setdefault('is_staff', True)
+
+extra_fields.setdefault('is_superuser', True)
+
+return self.create_user(email, password, **extra_fields)
+
+class User(AbstractBaseUser, PermissionsMixin):
+
+email = models.EmailField(unique=True)
+
+name = models.CharField(max_length=255)
+
+is_active = models.BooleanField(default=True)
+
+is_staff = models.BooleanField(default=False)
+
+created_at = models.DateTimeField(auto_now_add=True)
+
+USERNAME_FIELD = 'email'
+
+REQUIRED_FIELDS = ['name']
+
+objects = UserManager()
+
+def __str__(self):
+
+return self.email
+
+Then, in settings.py:
+
+AUTH_USER_MODEL = 'api.User'  # assuming the app is named 'api'
+
+INSTALLED_APPS includes 'rest_framework', 'rest_framework_simplejwt', and the app.
+
+REST_FRAMEWORK = {
+
+'DEFAULT_AUTHENTICATION_CLASSES': (
+
+'rest_framework_simplejwt.authentication.JWTAuthentication',
+
+)
+
+}
+
+Then, configure Simple JWT settings if needed, like token lifetime.
+
+Next, the Employer model:
+
+models.py:
+
+class Employer(models.Model):
+
+user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='employers')
+
+company_name = models.CharField(max_length=255)
+
+contact_person_name = models.CharField(max_length=255)
+
+email = models.EmailField()
+
+phone_number = models.CharField(max_length=20)
+
+address = models.TextField()
+
+created_at = models.DateTimeField(auto_now_add=True)
+
+def __str__(self):
+
+return self.company_name
+
+Now, serializers.
+
+For the User, create a UserSerializer for signup and profile.
+
+serializers.py:
+
+from rest_framework import serializers
+
+from .models import User, Employer
+
+class UserSignupSerializer(serializers.ModelSerializer):
+
+password = serializers.CharField(write_only=True)
+
+class Meta:
+
+model = User
+
+fields = ['email', 'name', 'password']
+
+extra_kwargs = {'password': {'write_only': True}}
+
+def create(self, validated_data):
+
+user = User.objects.create_user(
+
+email=validated_data['email'],
+
+name=validated_data['name'],
+
+password=validated_data['password']
+
+)
+
+return user
+
+class UserProfileSerializer(serializers.ModelSerializer):
+
+class Meta:
+
+model = User
+
+fields = ['email', 'name', 'created_at']
+
+class EmployerSerializer(serializers.ModelSerializer):
+
+class Meta:
+
+model = Employer
+
+fields = ['id', 'company_name', 'contact_person_name', 'email', 'phone_number', 'address', 'created_at']
+
+read_only_fields = ['id', 'created_at']
+
+def create(self, validated_data):
+
+# The user is set to the current user from the request
+
+user = self.context['request'].user
+
+employer = Employer.objects.create(user=user, **validated_data)
+
+return employer
+
+For the Employer serializer, the create method uses the user from the request context. So in the view, when saving, the user is automatically assigned.
+
+Now, the authentication views.
+
+views.py:
+
+from rest_framework.views import APIView
+
+from rest_framework.response import Response
+
+from rest_framework import status
+
+from rest_framework.permissions import IsAuthenticated
+
+from rest_framework_simplejwt.views import TokenObtainPairView
+
+from .serializers import UserSignupSerializer, UserProfileSerializer, EmployerSerializer
+
+from .models import Employer
+
+from .permissions import IsOwner
+
+class SignUpView(APIView):
+
+def post(self, request):
+
+serializer = UserSignupSerializer(data=request.data)
+
+if serializer.is_valid():
+
+serializer.save()
+
+return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+
+def post(self, request, *args, **kwargs):
+
+# Customize if needed, like using email instead of username
+
+# By default, Simple JWT's TokenObtainPairSerializer uses USERNAME_FIELD, which is email in our case
+
+return super().post(request, *args, **kwargs)
+
+class ProfileView(APIView):
+
+permission_classes = [IsAuthenticated]
+
+def get(self, request):
+
+serializer = UserProfileSerializer(request.user)
+
+return Response(serializer.data)
+
+For the login view, since the USERNAME_FIELD is email, the default TokenObtainPairView should work with email and password. So maybe we don't need to customize it. The user can send email and password in the POST request to /api/auth/login/, and the tokens will be generated.
+
+Now, the Employer views:
+
+class EmployerCreateView(APIView):
+
+permission_classes = [IsAuthenticated]
+
+def post(self, request):
+
+serializer = EmployerSerializer(data=request.data, context={'request': request})
+
+if serializer.is_valid():
+
+serializer.save()
+
+return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class EmployerListView(APIView):
+
+permission_classes = [IsAuthenticated]
+
+def get(self, request):
+
+employers = Employer.objects.filter(user=request.user)
+
+serializer = EmployerSerializer(employers, many=True)
+
+return Response(serializer.data)
+
+class EmployerDetailView(APIView):
+
+permission_classes = [IsAuthenticated, IsOwner]
+
+def get_object(self, pk):
+
+try:
+
+return Employer.objects.get(pk=pk)
+
+except Employer.DoesNotExist:
+
+raise Http404
+
+def get(self, request, pk):
+
+employer = self.get_object(pk)
+
+self.check_object_permissions(request, employer)
+
+serializer = EmployerSerializer(employer)
+
+return Response(serializer.data)
+
+def put(self, request, pk):
+
+employer = self.get_object(pk)
+
+self.check_object_permissions(request, employer)
+
+serializer = EmployerSerializer(employer, data=request.data, partial=False)
+
+if serializer.is_valid():
+
+serializer.save()
+
+return Response(serializer.data)
+
+return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+def delete(self, request, pk):
+
+employer = self.get_object(pk)
+
+self.check_object_permissions(request, employer)
+
+employer.delete()
+
+return Response(status=status.HTTP_204_NO_CONTENT)
+
+Wait, but using APIView for each method might be a bit tedious. Alternatively, use generics for the CRUD operations.
+
+For example, for creating an employer, use CreateAPIView. For listing, ListAPIView. For detail, RetrieveUpdateDestroyAPIView with permission classes.
+
+Let's adjust that.
+
+EmployerCreateView could be a CreateAPIView:
+
+from rest_framework.generics import CreateAPIView, ListAPIView, RetrieveUpdateDestroyAPIView
+
+class EmployerCreateView(CreateAPIView):
+
+serializer_class = EmployerSerializer
+
+permission_classes = [IsAuthenticated]
+
+def perform_create(self, serializer):
+
+serializer.save(user=self.request.user)
+
+class EmployerListView(ListAPIView):
+
+serializer_class = EmployerSerializer
+
+permission_classes = [IsAuthenticated]
+
+def get_queryset(self):
+
+return Employer.objects.filter(user=self.request.user)
+
+class EmployerDetailView(RetrieveUpdateDestroyAPIView):
+
+serializer_class = EmployerSerializer
+
+permission_classes = [IsAuthenticated, IsOwner]
+
+lookup_field = 'id'
+
+def get_queryset(self):
+
+return Employer.objects.filter(user=self.request.user)
+
+Wait, but if the queryset is filtered by user, then even if someone tries to access an employer not theirs, the queryset will return 404, which is the same as not found. So combining the queryset filter with the IsOwner permission may be redundant, but perhaps better to have both.
+
+But in the RetrieveUpdateDestroyAPIView, if the queryset is filtered to the user's employers, then when trying to access an employer that exists but not owned by the user, it will return 404. So the permission check isn't necessary. But the problem says that the user can only access their own employers. So if the queryset is filtered by user, then even if another user's employer id is used, it will not be found. So the permission check may not be needed here. But the original requirement says to use permissions to ensure that.
+
+But for the purpose of permissions, perhaps using the queryset filtering is sufficient. However, the problem states that the permissions should enforce that users can only access their own employers. So using both methods is better.
+
+Alternatively, perhaps the IsOwner permission is needed. But in the EmployerDetailView, the get_queryset is already filtering to the user's employers. So when trying to retrieve, update, or delete, the object must belong to the user. Therefore, if the user tries to access an employer that doesn't belong to them, the queryset will not find it, resulting in a 404. But the permission is supposed to return 403 Forbidden. However, the problem states that a user can only access their own employers, so if they attempt to access another's employer, they should get a 404 or 403? The standard is to return 404 to avoid leaking existence of objects.
+
+So perhaps, by filtering the queryset, any unauthorized access will result in 404, which is acceptable.
+
+But the problem says, "A user can only access, update, or delete their own employers." So perhaps using the queryset filter is sufficient. So in the EmployerDetailView, the get_queryset is Employer.objects.filter(user=request.user). So any object not in that queryset will return 404, which meets the requirement.
+
+Therefore, the permission class may not be necessary for the detail view. But in that case, the permission is handled via queryset filtering.
+
+So, adjusting the EmployerDetailView:
+
+class EmployerDetailView(RetrieveUpdateDestroyAPIView):
+
+serializer_class = EmployerSerializer
+
+permission_classes = [IsAuthenticated]
+
+lookup_field = 'id'
+
+def get_queryset(self):
+
+return Employer.objects.filter(user=self.request.user)
+
+This way, even if the employer exists but doesn't belong to the user, the view will return 404. So the user cannot see others' employers. This meets the permission requirement.
+
+So, perhaps the custom IsOwner permission is not needed. But the problem says to include permissions. However, in this approach, the permission is enforced via the queryset. So maybe that's acceptable.
+
+So, in the views:
+
+EmployerCreateView uses CreateAPIView, sets the user automatically.
+
+EmployerListView uses ListAPIView, filtered by user.
+
+EmployerDetailView uses RetrieveUpdateDestroyAPIView, with queryset filtered by user. So all operations are allowed only on the user's employers.
+
+Now, for the URLs.
+
+urls.py:
+
+from django.urls import path
+
+from .views import SignUpView, CustomTokenObtainPairView, ProfileView, EmployerCreateView, EmployerListView, EmployerDetailView
+
+urlpatterns = [
+
+path('api/auth/signup/', SignUpView.as_view(), name='signup'),
+
+path('api/auth/login/', CustomTokenObtainPairView.as_view(), name='login'),
+
+path('api/auth/profile/', ProfileView.as_view(), name='profile'),
+
+path('api/employers/', EmployerCreateView.as_view(), name='employer-create'),
+
+path('api/employers/', EmployerListView.as_view(), name='employer-list'),
+
+path('api/employers/<int:id>/', EmployerDetailView.as_view(), name='employer-detail'),
+
+]
+
+Wait, but the two employer-list and employer-create have the same URL. That's a problem. So need to separate them.
+
+Wait, the endpoints as per the requirements:
+
+POST /api/employers/ → Create Employer (EmployerCreateView)
+
+GET /api/employers/ → List all Employers (EmployerListView)
+
+So, how to handle different methods on the same URL. So perhaps, using a single view that handles both GET and POST. Like a ListCreateAPIView.
+
+But in that case, the view would handle both listing and creating.
+
+But according to the requirements, the POST is for creating, and GET for listing. So using a ListCreateAPIView.
+
+So, combining the EmployerCreateView and EmployerListView into one:
+
+class EmployerListCreateView(ListCreateAPIView):
+
+serializer_class = EmployerSerializer
+
+permission_classes = [IsAuthenticated]
+
+def get_queryset(self):
+
+return Employer.objects.filter(user=self.request.user)
+
+def perform_create(self, serializer):
+
+serializer.save(user=self.request.user)
+
+Then, the URLs for employers would be:
+
+path('api/employers/', EmployerListCreateView.as_view(), name='employer-list-create'),
+
+And the detail view's URL remains as before.
+
+But according to the requirements, the endpoints are:
+
+POST /api/employers/ → Create Employer
+
+GET /api/employers/ → List all for user
+
+So combining into a ListCreateAPIView is appropriate.
+
+Then, the views can be adjusted as follows.
+
+So the code would be:
+
+views.py:
+
+from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
+
+class EmployerListCreateView(ListCreateAPIView):
+
+serializer_class = EmployerSerializer
+
+permission_classes = [IsAuthenticated]
+
+def get_queryset(self):
+
+return Employer.objects.filter(user=self.request.user)
+
+def perform_create(self, serializer):
+
+serializer.save(user=self.request.user)
+
+class EmployerDetailView(RetrieveUpdateDestroyAPIView):
+
+serializer_class = EmployerSerializer
+
+permission_classes = [IsAuthenticated]
+
+lookup_field = 'id'
+
+def get_queryset(self):
+
+return Employer.objects.filter(user=self.request.user)
+
+Then, in urls.py:
+
+path('api/employers/', EmployerListCreateView.as_view(), name='employer-list-create'),
+
+path('api/employers/<int:id>/', EmployerDetailView.as_view(), name='employer-detail'),
+
+This way, the same URL handles both GET and POST for listing and creating, and the detail view handles the individual employers.
+
+That seems better.
+
+Now, the permissions are enforced via the queryset filtering, so even if a user knows another employer's ID, they can't access it because it's not in their filtered queryset.
+
+This should meet the requirements.
+
+Now, the auth URLs:
+
+For login, using the default TokenObtainPairView provided by Simple JWT, but since our User model uses email as the username field, it should work by sending email and password.
+
+So in the CustomTokenObtainPairView, maybe no changes are needed. But the default expects 'username' and 'password' in the POST data. But since our USERNAME_FIELD is 'email', the 'username' field in the request is actually the email. So the client should send 'email' and 'password'? Or does Simple JWT's default serializer use the USERNAME_FIELD as the username, so in the POST request, the client should send 'email' as the username.
+
+Wait, in Simple JWT's TokenObtainPairSerializer, the default is to use the username_field (which is 'email' in our case). So when the client sends a POST to /api/auth/login/ with 'username' and 'password', but 'username' is actually the email. Wait, no: the serializer's username_field is set to the USERNAME_FIELD of the user model. But in the request data, the key is 'username', not 'email'. So to allow the client to send 'email' instead of 'username', we need to customize the serializer.
+
+Ah, here's a problem. The default TokenObtainPairSerializer expects the username to be provided in the 'username' field. But we want the client to send 'email' instead. So we need to customize the serializer to use the email field.
+
+So, to modify the serializer to accept 'email' instead of 'username', we can create a custom serializer:
+
+serializers.py:
+
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+
+def validate(self, attrs):
+
+# The default uses 'username', but we want 'email'
+
+# So rename 'email' to 'username' in the validated data
+
+attrs['username'] = attrs.get('email')
+
+del attrs['email']
+
+return super().validate(attrs)
+
+But this may not work. Alternatively, we can override the username_field in the serializer.
+
+Wait, the TokenObtainPairSerializer uses the username_field from the user model. So by default, the client should send 'username' which is the email. But the problem says that login should use email and password. So perhaps the client is expected to send 'email' and 'password' in the POST data. However, the default serializer expects 'username' and 'password'. Therefore, to allow the client to send 'email' instead of 'username', we need to customize the serializer to look for 'email' in the request data.
+
+So, creating a custom serializer that uses 'email' as the username field.
+
+Here's how:
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+
+def __init__(self, *args, **kwargs):
+
+super().__init__(*args, **kwargs)
+
+self.fields['username'].field_name = 'email'
+
+But perhaps that's not sufficient. Alternatively, override the validate method:
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+
+def validate(self, attrs):
+
+# Rename 'email' to 'username' for the parent class's validation
+
+attrs['username'] = attrs.get('email')
+
+return super().validate(attrs)
+
+But then the client should send 'email' instead of 'username' in the request data.
+
+So, in the POST request to login, the client sends:
+
+{
+
+"email": "user@example.com",
+
+"password": "password123"
+
+}
+
+But the serializer will take 'email' from attrs, copy it to 'username', and then call the parent's validate.
+
+Wait, but then the parent's validate will check for 'username' and 'password' in the data. So this way, the client can send 'email' as the username field.
+
+Wait, maybe another approach. The client should send 'email' and 'password', and the serializer should map 'email' to the username_field (which is 'email').
+
+But the default serializer's field names are 'username' and 'password'. So the client must send 'username' (which is the email) and 'password'. But the requirement says to login with email and password. So the client is expected to send email as the username. Therefore, perhaps the frontend will send 'username' as the email. But the requirement states that the login should be done with email and password. So the API should expect 'email' as a field in the request, not 'username'.
+
+Therefore, we need to customize the serializer to accept 'email' instead of 'username'.
+
+Here's the correct approach:
+
+Create a custom serializer that uses 'email' as the field name instead of 'username'.
+
+In serializers.py:
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+
+username_field = User.USERNAME_FIELD  # which is 'email'
+
+def __init__(self, *args, **kwargs):
+
+super().__init__(*args, **kwargs)
+
+self.fields[self.username_field] = self.fields.pop('username')
+
+This way, the serializer will expect the username_field (email) in the request data, using the key 'email' instead of 'username'.
+
+But I'm not sure. Alternatively, we can create a serializer that accepts 'email' as a field and uses that as the username.
+
+Wait, looking at the source code of TokenObtainPairSerializer:
+
+class TokenObtainPairSerializer(TokenObtainSerializer):
+
+@classmethod
+
+def get_token(cls, user):
+
+return RefreshToken.for_user(user)
+
+def validate(self, attrs):
+
+data = super().validate(attrs)
+
+refresh = self.get_token(self.user)
+
+data['refresh'] = str(refresh)
+
+data['access'] = str(refresh.access_token)
+
+return data
+
+And the parent class (TokenObtainSerializer) has:
+
+class TokenObtainSerializer(serializers.Serializer):
+
+username_field = settings.USERNAME_FIELD
+
+def __init__(self, *args, **kwargs):
+
+super().__init__(*args, **kwargs)
+
+self.fields[self.username_field] = serializers.CharField()
+
+self.fields['password'] = PasswordField()
+
+def validate(self, attrs):
+
+authenticate_kwargs = {
+
+self.username_field: attrs[self.username_field],
+
+'password': attrs['password'],
+
+}
+
+# ... authenticate ...
+
+So, in our case, the username_field is 'email', so the serializer expects a field named 'email' in the request data.
+
+But the default TokenObtainPairSerializer uses the username_field from the user model. So if our user model's USERNAME_FIELD is 'email', then the serializer will look for 'email' in the request data, not 'username'.
+
+Wait, no. Wait, in the TokenObtainSerializer's __init__ method, it adds a field with the name of username_field. So in our case, since username_field is 'email', the serializer will have a field named 'email' and 'password'. So the client should send 'email' and 'password' in the POST data.
+
+So perhaps no customization is needed. We just need to set the USERNAME_FIELD to 'email', and the default TokenObtainPairSerializer will expect 'email' as the field.
+
+Therefore, in our case, the client should send:
+
+POST /api/auth/login/
+
+{
+
+"email": "user@example.com",
+
+"password": "password123"
+
+}
+
+And the default TokenObtainPairSerializer will handle it.
+
+But wait, let me check. In the code for TokenObtainSerializer:
+
+def __init__(self, *args, **kwargs):
+
+super().__init__(*args, **kwargs)
+
+self.fields[self.username_field] = serializers.CharField()
+
+self.fields['password'] = PasswordField()
+
+So if username_field is 'email', then the serializer's fields are 'email' and 'password'. So the client must send 'email' and 'password', which matches the requirement.
+
+Therefore, the default TokenObtainPairView should work if the USERNAME_FIELD is 'email'. So the CustomTokenObtainPairView may not be needed. We can use the default view, and just adjust the URL.
+
+So in the urls.py:
+
+from rest_framework_simplejwt.views import TokenObtainPairView
+
+urlpatterns = [
+
+...
+
+path('api/auth/login/', TokenObtainPairView.as_view(), name='login'),
+
+...
+
+]
+
+Then, the client sends 'email' and 'password' in the request body.
+
+Therefore, no need for a custom serializer unless we want to change the response data.
+
+But according to the requirements, the login should use email and password, which is already handled.
+
+So the login endpoint is covered by the default TokenObtainPairView.
+
+Now, the logout endpoint. The requirement says it's optional, but if we want to implement token blacklisting, we need to handle it. However, Simple JWT doesn't support token blacklisting by default. To implement logout, perhaps we can use a view that adds the token to a blacklist. But this requires additional setup. Since it's optional, maybe we can skip it for now, or mention it as a note.
+
+Now, the urls should be as per the requirements.
+
+Testing the endpoints:
+
+Signup: POST to /api/auth/signup/ with email, name, password.
+
+Login: POST to /api/auth/login/ with email and password, returns tokens.
+
+Profile: GET to /api/auth/profile/ with Authorization header containing the JWT token.
+
+Employer CRUD endpoints require authentication.
+
+Now, the serializers and views are in place.
+
+The next step is to set up the URLs correctly.
+
+Now, the UserProfileView is a GET endpoint that returns the current user's profile.
+
+In the views, the ProfileView is an APIView with permission_classes = [IsAuthenticated].
+
+When a GET request is made, it serializes the request.user and returns the data.
+
+Now, the models are set up.
+
+Testing the code:
+
+- Make sure that when a user signs up, a new user is created with email, name, and password.
+
+- Login returns JWT tokens.
+
+- The employer endpoints create and list employers linked to the user.
+
+Possible issues:
+
+- Did I set the AUTH_USER_MODEL correctly in settings?
+
+- Are the migrations created properly? After creating the User model, run makemigrations and migrate.
+
+- Are the serializers correctly validating data?
+
+- In the Employer serializer, the create method is handled by the view's perform_create, so maybe the serializer doesn't need to handle user assignment. Wait, in the EmployerListCreateView's perform_create, we save the user. So in the serializer's create method, perhaps it's redundant. Let me check.
+
+In the serializer's create method, we have:
+
+def create(self, validated_data):
+
+user = self.context['request'].user
+
+employer = Employer.objects.create(user=user, **validated_data)
+
+return employer
+
+But in the view's perform_create, we call serializer.save(user=request.user). Wait, no: the perform_create is called with serializer.save(), and we pass user=request.user to the save method.
+
+So, in the serializer's save method, if the user is passed in, it will be used. So in the serializer's create method, we should use the user passed in via the save method.
+
+Wait, the correct approach is that in the view's perform_create, we call serializer.save(user=request.user). Then, in the serializer's create method, we can access validated_data['user'].
+
+But in the current serializer's create method, the user is taken from the context. That may conflict.
+
+So, perhaps the serializer's create method should not explicitly take the user from the context, but instead rely on the view to pass the user in the validated data.
+
+So, in the Employer serializer, remove the create method. Because when the view calls serializer.save(user=request.user), the user is passed as a keyword argument to the serializer's save method, which then includes it in the validated data.
+
+Wait, no: when you call serializer.save(user=request.user), the user is added to the validated data as 'user'. Therefore, the serializer's create method should have 'user' in the validated data.
+
+So, the EmployerSerializer's create method can be removed, and the model's user field will be populated via the view's perform_create.
+
+So, adjusting the EmployerSerializer:
+
+class EmployerSerializer(serializers.ModelSerializer):
+
+class Meta:
+
+model = Employer
+
+fields = ['id', 'company_name', 'contact_person_name', 'email', 'phone_number', 'address', 'created_at']
+
+read_only_fields = ['id', 'created_at']
+
+# No need for create method here.
+
+Then, in the EmployerListCreateView's perform_create:
+
+def perform_create(self, serializer):
+
+serializer.save(user=self.request.user)
+
+This way, when creating an Employer, the user is set to the current user.
+
+That's the correct approach. So the create method in the serializer is not needed; the view handles setting the user.
+
+That's better.
+
+So the EmployerSerializer doesn't need a custom create method.
+
+Now, testing:
+
+When a POST request is made to /api/employers/, the user is automatically set to the current user.
+
+Now, what about the Employer model's user field? It's a ForeignKey to User, so it must be set.
+
+Yes, via the perform_create.
+
+Now, the code should be correct.
+
+Now, the remaining parts are:
+
+- Setting up the requirements.txt with dependencies.
+
+- Creating a README explaining how to run the project.
+
+- Postman collection (optional).
+
+The requirements.txt should include:
+
+Django
+
+djangorestframework
+
+djangorestframework-simplejwt
+
+So, the contents would be:
+
+Django==4.2.7
+
+djangorestframework==3.14.0
+
+djangorestframework-simplejwt==5.3.0
+
+But the versions may vary depending on the latest.
+
+The README should explain steps like:
+
+1. Clone the repository.
+
+2. Create a virtual environment.
+
+3. Install dependencies with pip install -r requirements.txt.
+
+4. Run migrations: python manage.py migrate.
+
+5. Run the server: python manage.py runserver.
+
+Possibly, create a superuser for testing.
+
+Testing the API with Postman:
+
+- Sign up a user via POST /api/auth/signup/ with email, name, password.
+
+- Login via POST /api/auth/login/ with email and password to get tokens.
+
+- Use the access token in the Authorization header as Bearer <token> to access the profile and employers endpoints.
+
+- Create employers via POST /api/employers/ with the required fields.
+
+- List employers via GET /api/employers/.
+
+Now, possible edge cases:
+
+- A user cannot access another user's employers.
+
+- All employer endpoints require authentication.
+
+- Validation on the Employer fields, like email format, phone number, etc. Using Django's built-in validators.
+
+For example, the email field in the Employer model is an EmailField, which is validated by DRF's serializer.
+
+Similarly, phone_number is a CharField, which can be validated in the serializer if needed.
+
+But according to the requirements, use Django's built-in validation where possible. So for the Employer's email, the serializer's EmailField will validate the format.
+
+In the Employer model's email field, it's an EmailField, which enforces valid email format at the model level. The serializer's EmailField also validates it.
+
+So that's handled.
+
+Testing the serializers:
+
+If a user tries to create an employer without required fields (like company_name), the serializer will return errors.
+
+Now, the code should be complete.

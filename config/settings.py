@@ -153,5 +153,5 @@ SIMPLE_JWT = {
 }
 
 # Custom user
-# ACCOUNT_SESSION_REMEMBER = True
-# AUTH_USER_MODEL = 'users.CustomUser'
+ACCOUNT_SESSION_REMEMBER = True
+AUTH_USER_MODEL = 'accounts.User'
