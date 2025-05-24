@@ -12,8 +12,8 @@
     <table class="table table-striped">
         <thead>
             <tr>
-                <th>Company</th>
                 <th>Contact Person</th>
+                <th>Company</th>
                 <th>Email</th>
                 <th>Phone</th>
                 <th>Actions</th>
@@ -22,8 +22,8 @@
         <tbody>
             {% for employer in employers %}
             <tr>
-                <td>{{ employer.company_name }}</td>
                 <td>{{ employer.contact_person_name }}</td>
+                <td>{{ employer.company_name }}</td>
                 <td>{{ employer.email }}</td>
                 <td>{{ employer.phone_number }}</td>
                 <td>
