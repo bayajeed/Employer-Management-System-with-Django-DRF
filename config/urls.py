@@ -49,6 +49,7 @@ urlpatterns = [
     # API URLs
     path('api/auth/', include('users.urls')),
     path('api/employers/', include('employers.urls')),
+    path('news/', include('news.urls')),
     
     # Template URLs
     path('login/', auth_views.LoginView.as_view(template_name='registration/login.html'), name='login'),
