@@ -1,4 +1,5 @@
 <!-- news/templates/news/home.html -->
+{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -12,6 +13,11 @@
             <h2>{{ post.title }}</h2>
             <p><strong>By:</strong> {{ post.author }} | <em>{{ post.published_date }}</em></p>
             <p>{{ post.content }}</p>
+            {% if post.image %}
+                <img src="{{ post.image.url }}" alt="{{ post.title }}" width= "150" height= "150" >
+            {% else %}
+                <p> No Image available</p>
+            {% endif %}
         </div>
     {% endfor %}
 </body>
